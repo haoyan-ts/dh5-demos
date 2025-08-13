@@ -20,8 +20,8 @@ class DH5Registers:
     """DH5 robot register addresses"""
 
     # Initialization registers
-    INITIALIZE_ALL = 0x0001
-    INITIALIZE_AXIS_BASE = 0x0100
+    # INITIALIZE_ALL = 0x0001
+    INITIALIZE = 0x0100
     INITIALIZATION_STATUS = 0x0200
 
     # Configuration registers
@@ -58,7 +58,7 @@ class DH5Registers:
     BACK_TO_ZERO = 0x0504
 
     # Data registers
-    TARGET_POSITIONS = 0x0300
+    # TARGET_POSITIONS = 0x0300
     HISTORY_FAULTS = 0x0B00
 
     # Constants
@@ -189,6 +189,10 @@ class DH5ModbusAPI:
             response = self._execute_modbus_function(
                 function_code, register_address, data, data_length
             )
+
+            if response.isError():
+                return self.ERROR_INVALID_RESPONSE
+
             return self._parse_response(response, function_code)
         except (ModbusException, ValueError, ConnectionError) as e:
             logger.error(f"Modbus operation failed: {str(e)}")
@@ -197,13 +201,18 @@ class DH5ModbusAPI:
             logger.error(f"Unexpected error: {str(e)}")
             return self.ERROR_INVALID_RESPONSE
 
+    def _clear_recv_buffer(self):
+        """Clear the receive buffer of the Modbus client"""
+        if self.client:
+            self.client.recv(self.client._in_waiting())
+
     def _execute_modbus_function(
         self,
         function_code: int,
         register_address: int,
         data: Optional[Union[int, List[int]]],
         data_length: Optional[int],
-    ):
+    ) -> ModbusPDU:
         """Execute specific Modbus function
 
         Args:
@@ -222,6 +231,7 @@ class DH5ModbusAPI:
             raise ConnectionError("Modbus client not initialized")
 
         if function_code == ModbusFunction.READ_HOLDING_REGISTERS:
+            self._clear_recv_buffer()
             return self.client.read_holding_registers(
                 register_address, count=data_length or 1, device_id=self.modbus_id
             )
@@ -230,16 +240,28 @@ class DH5ModbusAPI:
                 raise ValueError("Data is required for write single register")
             if isinstance(data, list):
                 raise ValueError("Single register write requires int, not list")
+
+            self._clear_recv_buffer()
+
             return self.client.write_register(
-                register_address, data, device_id=self.modbus_id
+                register_address,
+                data,
+                device_id=self.modbus_id,
+                no_response_expected=True,
             )
         elif function_code == ModbusFunction.WRITE_MULTIPLE_REGISTERS:
             if data is None:
                 raise ValueError("Data is required for write multiple registers")
             if isinstance(data, int):
                 data = [data]  # Convert single int to list
+
+            self._clear_recv_buffer()
+
             return self.client.write_registers(
-                register_address, data, device_id=self.modbus_id
+                register_address,
+                data,
+                device_id=self.modbus_id,
+                no_response_expected=True,
             )
         else:
             raise ValueError(f"Unsupported function code: {function_code}")
@@ -493,7 +515,7 @@ class DH5ModbusAPI:
 
         result = self.send_modbus_command(
             function_code=ModbusFunction.WRITE_MULTIPLE_REGISTERS,
-            register_address=DH5Registers.TARGET_POSITIONS,
+            register_address=DH5Registers.AXIS_POSITION_BASE,
             data=positions,
         )
         return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
@@ -575,7 +597,7 @@ class DH5ModbusAPI:
 
         result = self.send_modbus_command(
             function_code=ModbusFunction.WRITE_SINGLE_REGISTER,
-            register_address=DH5Registers.INITIALIZE_ALL,
+            register_address=DH5Registers.INITIALIZE,
             data=data,
         )
         return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
@@ -611,7 +633,7 @@ class DH5ModbusAPI:
 
         result = self.send_modbus_command(
             function_code=ModbusFunction.WRITE_SINGLE_REGISTER,
-            register_address=DH5Registers.INITIALIZE_AXIS_BASE,
+            register_address=DH5Registers.INITIALIZE,
             data=init_status,
         )
         return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE

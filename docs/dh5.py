@@ -67,7 +67,7 @@ class DH5ModbusAPI:
                 return self.ERROR_INVALID_COMMAND
 
             self.serial_connection.write(message)
-            response = self.serial_connection.read(256)
+            # response = self.serial_connection.read(256)
             return self._parse_response(response, function_code)
         except Exception as e:
             return f"Error: {str(e)}"
@@ -175,7 +175,7 @@ class DH5ModbusAPI:
         for axis in range(6):
             data |= mode << (axis * 2)  # Set all axes to the given mode
         return self.send_modbus_command(
-            function_code=0x06, register_address=0x0001, data=data
+            function_code=0x06, register_address=0x0100, data=data
         )
 
     def initialize_axis(self, axis, mode):
@@ -226,6 +226,84 @@ class DH5ModbusAPI:
                     status[f"axis_F{axis + 1}"] = "not initialized"
             return status
         return self.ERROR_INVALID_RESPONSE
+
+    def set_position(self, position: list):
+        if len(position) != 6:
+            return self.ERROR_INVALID_COMMAND
+        register_address = 0x0101
+        return self.send_modbus_command(
+            function_code=0x10,
+            register_address=register_address,
+            data=position,
+            data_length=6,
+        )
+
+    def set_speed(self, speed: list):
+        if len(speed) != 6:
+            return self.ERROR_INVALID_COMMAND
+        i = 0
+        while i < len(speed):
+            if speed[i] < 1 or speed[i] > 100:
+                return self.ERROR_INVALID_COMMAND
+        register_address = 0x010D
+        return self.send_modbus_command(
+            function_code=0x10,
+            register_address=register_address,
+            data=speed,
+            data_length=6,
+        )
+
+    def set_force(self, force: list):
+        if len(force) != 6:
+            return self.ERROR_INVALID_COMMAND
+
+        i = 0
+        while i < len(force):
+            if force[i] < 20 or force[i] > 100:
+                return self.ERROR_INVALID_COMMAND
+        register_address = 0x0107
+        return self.send_modbus_command(
+            function_code=0x10,
+            register_address=register_address,
+            data=force,
+            data_length=6,
+        )
+
+    def get_seted_position(self):
+        register_address = 0x0101
+        return self.send_modbus_command(
+            function_code=0x03, register_address=register_address, data_length=6
+        )
+
+    def get_seted_speed(self):
+        register_address = 0x010D
+        return self.send_modbus_command(
+            function_code=0x03, register_address=register_address, data_length=6
+        )
+
+    def get_seted_force(self):
+        register_address = 0x0107
+        return self.send_modbus_command(
+            function_code=0x03, register_address=register_address, data_length=6
+        )
+
+    def get_position_fd(self):
+        register_address = 0x0207
+        return self.send_modbus_command(
+            function_code=0x03, register_address=register_address, data_length=6
+        )
+
+    def get_speed_fd(self):
+        register_address = 0x020D
+        return self.send_modbus_command(
+            function_code=0x03, register_address=register_address, data_length=6
+        )
+
+    def get_current_fd(self):
+        register_address = 0x0213
+        return self.send_modbus_command(
+            function_code=0x03, register_address=register_address, data_length=6
+        )
 
     def set_axis_position(self, axis, position):
         if axis < 1 or axis > 6:
@@ -298,44 +376,53 @@ class DH5ModbusAPI:
 
 # Example usage
 if __name__ == "__main__":
-    api = DH5ModbusAPI(port="COM6", baud_rate=115200)
-    print(api.open_connection())
-    # print(api.initialize(0b10))
-    #
-    # time.sleep(1)
-    # # print(api.initialize_axis(3, 0b10))
-    #
-    # time.sleep(3)
+    api = DH5ModbusAPI(port="COM4", baud_rate=115200)
+    api.open_connection()
 
+    # 示例
+    # 初始化：
+    # api.initialize(mode=0b10)
+    # time.sleep(6)
+    # 设置6个轴的位置
+    interval = 0.02
     while True:
-        print(api.get_history_faults())
-        time.sleep(2)
-        print(api.set_axis_position(2, 10))
-        time.sleep(2)
-        print(api.set_axis_position(2, 1000))
-    # print(api.set_axis_position(1, 1000))
-    # print(api.set_axis_speed(1, 200))
-    # print(api.set_axis_force(1, 300))
-    # print(api.get_axis_position(1))
-    # print(api.get_axis_position(2))
-    # print(api.get_axis_position(3))
-    # print(api.get_axis_position(4))
-    # print(api.get_axis_position(5))
-    # print(api.get_axis_position(6))
-    # print(api.get_axis_speed(1))
-    # print(api.get_axis_current(1))
-    # print(api.set_uart_config(2, 1, 0,0))
-    # print(api.set_save_param(1))
-    # # print(len(api.get_history_faults()))
+        _position_list = [700, 1600, 1600, 1600, 1600, 700]
+        api.set_position(_position_list)
+        time.sleep(interval)
+        _position_list = [el - 100 for el in _position_list]
+        api.set_position(_position_list)
+        time.sleep(interval)
+    #
+    # time.sleep(2)
+    # 设置6个轴的位置
+    # _position_list = [400, 1000, 1000, 1000, 1000, 400]
+    # api.set_position(_position_list)
+
+    # 获取历史故障码
+    # print(api.get_history_faults())
+
+    # # 获取当前错误
+    # print(api.get_cur_faults())
+    # # 清除当前错误
+    # print(api.reset_faults())
+    # # 获取当前错误
+    # print(api.get_cur_faults())
+
+    # # 获取已经设置的 位置
+    # print(api.get_seted_position())
+    # # 获取已经设置的 速度
+    # print(api.get_seted_speed())
+    # # 获取已经设置的 力
+    # print(api.get_seted_force())
+
+    # # 获取当前电流反馈值
+    # print(api.get_current_fd())
+    #
+    # # 获取当前位置反馈值
+    # print(api.get_position_fd())
+    #
+    # # 获取当前速度反馈值
+    # print(api.get_speed_fd())
+
+    # 重启系统
     # print(api.restart_system())
-    # print(api.initialize_axis(2, 0b10))
-    # print(api.initialize_axis(3, 0b10))
-    # print(api.initialize_axis(4, 0b10))
-    # print(api.initialize_axis(5, 0b10))
-    # print(api.initialize_axis(5, 0b10))
-    # time.sleep(5)
-    # print(api.initialize_axis(6, 0b10))
-    # print(api.initialize_axis(1, 0b10))
-    time.sleep(5)
-    print(api.check_initialization())
-    print(api.close_connection())

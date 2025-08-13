@@ -72,8 +72,8 @@ class DH5LoopController:
         for axis in range(1, self.num_axes + 1):
             print(f"Initializing axis {axis}...")
             try:
-                # Initialize each axis individually with find stroke mode
-                result = self.dh5.initialize_axis(axis, 3)  # 3 = find stroke mode
+                # Initialize each axis individually with open mode
+                result = self.dh5.initialize_axis(axis, 2)  # 2 = open mode
                 if result == DH5ModbusAPI.SUCCESS:
                     print(f"Axis {axis} initialized successfully")
                 else:
@@ -85,13 +85,13 @@ class DH5LoopController:
 
         # Wait for all axes to complete initialization
         print("Waiting for all axes initialization to complete...")
-        time.sleep(10)  # Give more time for stroke finding
+        time.sleep(5)
 
         # Back to initial position
         print("Moving to initial position...")
-        self.dh5.set_all_positions([1] * self.num_axes)  # Move all axes to position 1
-        # self.dh5.back_to_initial_position()
-        time.sleep(8)  # Wait for movement to complete
+        for axis in range(1, self.num_axes + 1):
+            self.dh5.set_axis_position(axis, 1)  # Move each axis to position 1
+        time.sleep(5)  # Wait for movement to complete
 
         # Read and store maximum positions for each axis
         print("Reading initialization positions (approximating maximum positions)...")
@@ -260,6 +260,9 @@ def main():
         controller = DH5LoopController(
             port=COM_PORT, baud_rate=BAUD_RATE, loop_cycle=LOOP_CYCLE_TIME
         )
+
+        # Initialize the Serial port
+        controller.dh5.open_connection()
 
         # Run the workflow
         controller.run_loop_workflow()
