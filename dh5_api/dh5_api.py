@@ -583,6 +583,51 @@ class DH5ModbusAPI:
         )
         return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
 
+    def set_all_forces(self, forces: list[float]) -> int:
+        if len(forces) != DH5Registers.AXIS_COUNT:
+            raise ValueError(
+                f"Must provide exactly {DH5Registers.AXIS_COUNT} force values"
+            )
+
+        if not all(0.2 <= force <= 1.0 for force in forces):
+            raise ValueError("All force values must be float and between 0.2 and 1.0")
+
+        result = self.send_modbus_command(
+            function_code=ModbusFunction.WRITE_MULTIPLE_REGISTERS,
+            register_address=DH5Registers.AXIS_FORCE_BASE,
+            data=[int(force * 100) for force in forces],
+            data_length=DH5Registers.AXIS_COUNT,
+        )
+        return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
+
+    def set_all_speeds(self, speeds: list[float]) -> int:
+        """Set target speeds for all axes
+
+        Args:
+            speeds: List of 6 speed values for each axis
+
+        Returns:
+            SUCCESS if command sent successfully, error code otherwise
+
+        Raises:
+            ValueError: If speeds list doesn't contain exactly 6 values
+        """
+        if len(speeds) != DH5Registers.AXIS_COUNT:
+            raise ValueError(
+                f"Must provide exactly {DH5Registers.AXIS_COUNT} speed values"
+            )
+
+        if not all(0.1 <= speed <= 1.0 for speed in speeds):
+            raise ValueError("All speed values must be float and between 0.1 and 1.0")
+
+        result = self.send_modbus_command(
+            function_code=ModbusFunction.WRITE_MULTIPLE_REGISTERS,
+            register_address=DH5Registers.AXIS_SPEED_BASE,
+            data=[int(speed * 100) for speed in speeds],
+            data_length=DH5Registers.AXIS_COUNT,
+        )
+        return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
+
     # Configuration Methods
     def set_uart_config(
         self,

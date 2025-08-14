@@ -13,7 +13,11 @@ This example demonstrates basic operations with the DH5 device:
 import time
 import signal
 import sys
+
+import numpy as np
 from dh5_api import DH5ModbusAPI
+
+LOOP_CYCLE_TIME = 0.04  # seconds - you can modify this value
 
 
 class DH5LoopController:
@@ -72,6 +76,43 @@ class DH5LoopController:
         result = self.dh5.calibrate_max_positions()
 
         print("Device initialization completed successfully!")
+        return True
+
+    def run_loop_cycle_mode_2(self):
+        """Execute one cycle of the loop workflow in mode 2."""
+        self.loop_count += 1
+
+        # calculate intermediate steps
+        open_pose_scalings = [1.0] * self.num_axes
+        fist_pose_scalings = [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.05,
+        ]  # Example scaling for fist pose
+
+        v = 1.0 / 2.0
+        steps = int(v / LOOP_CYCLE_TIME)
+        for step_index, step_scalings in enumerate(
+            np.linspace(open_pose_scalings, fist_pose_scalings, steps)
+        ):
+            print(
+                f"\n setting positions for step {step_index} with scalings: {step_scalings}"
+            )
+            self.dh5.set_all_positions_by_ratio(step_scalings)
+            time.sleep(LOOP_CYCLE_TIME)
+
+        for step_index, step_scalings in enumerate(
+            np.linspace(fist_pose_scalings, open_pose_scalings, steps)
+        ):
+            print(
+                f"\n setting positions for step {step_index + steps} with scalings: {step_scalings}"
+            )
+            self.dh5.set_all_positions_by_ratio(step_scalings)
+            time.sleep(LOOP_CYCLE_TIME)
+
         return True
 
     def run_loop_cycle(self):
@@ -133,12 +174,20 @@ class DH5LoopController:
         print(f"\nStarting loop workflow with {self.loop_cycle}s cycle time...")
         print("Press Ctrl+C to stop the loop workflow gracefully.")
 
+        print("Setting initial forces and speeds...")
+        self.dh5.set_all_forces([0.5] * self.num_axes)
+        print("Forces set, waiting for stabilization...")
+        time.sleep(1)  # Allow forces to stabilize
+        self.dh5.set_all_speeds([1.0] * self.num_axes)
+        print("Speeds set, waiting for stabilization...")
+        time.sleep(1)  # Allow speeds to stabilize
+
         try:
             while self.running:
                 cycle_start_time = time.time()
 
                 # Execute one loop cycle
-                if not self.run_loop_cycle():
+                if not self.run_loop_cycle_mode_2():
                     print("Loop cycle failed, stopping workflow...")
                     break
 
@@ -169,7 +218,6 @@ def main():
     # Configuration
     COM_PORT = "COM4"
     BAUD_RATE = 115200
-    LOOP_CYCLE_TIME = 3.0  # seconds - you can modify this value
 
     print("DH5 Modbus API - Loop Workflow Example")
     print("=" * 40)
@@ -181,7 +229,7 @@ def main():
     try:
         # Create and run the loop controller
         controller = DH5LoopController(
-            port=COM_PORT, baud_rate=BAUD_RATE, loop_cycle=LOOP_CYCLE_TIME
+            port=COM_PORT, baud_rate=BAUD_RATE, loop_cycle=LOOP_CYCLE_TIME * 2
         )
 
         # Run the workflow
