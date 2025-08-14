@@ -69,89 +69,10 @@ class DH5LoopController:
 
         # Initialize all axes
         print("Initializing all axes...")
-        for axis in range(1, self.num_axes + 1):
-            print(f"Initializing axis {axis}...")
-            try:
-                # Initialize each axis individually with open mode
-                result = self.dh5.initialize_axis(axis, 2)  # 2 = open mode
-                if result == DH5ModbusAPI.SUCCESS:
-                    print(f"Axis {axis} initialized successfully")
-                else:
-                    print(f"Failed to initialize axis {axis}: {result}")
-                time.sleep(1)  # Small delay between axis initializations
-            except Exception as e:
-                print(f"Error initializing axis {axis}: {e}")
-                return False
-
-        # Wait for all axes to complete initialization
-        print("Waiting for all axes initialization to complete...")
-        time.sleep(5)
-
-        # Back to initial position
-        print("Moving to initial position...")
-        for axis in range(1, self.num_axes + 1):
-            self.dh5.set_axis_position(axis, 1)  # Move each axis to position 1
-        time.sleep(5)  # Wait for movement to complete
-
-        # Read and store maximum positions for each axis
-        print("Reading initialization positions (approximating maximum positions)...")
-        try:
-            positions = self.dh5.get_all_positions()
-            if isinstance(positions, list) and len(positions) == self.num_axes:
-                # Use the initialization positions as maximum values with some safety margin
-                self.max_positions = [max(1000, int(pos * 0.95)) for pos in positions]
-                print(f"Initialization positions: {positions}")
-                print(f"Using maximum positions (95% of init): {self.max_positions}")
-            else:
-                raise Exception("Failed to get valid position readings")
-
-        except Exception as e:
-            print(f"Error reading initialization positions: {e}")
-            # Use default safe maximum values if reading fails
-            self.max_positions = [
-                700,
-                1500,
-                1500,
-                1500,
-                1500,
-                700,
-            ]  # Conservative defaults
-            print(f"Using default maximum positions: {self.max_positions}")
+        result = self.dh5.calibrate_max_positions()
 
         print("Device initialization completed successfully!")
         return True
-
-    def validate_and_clamp_positions(self, positions):
-        """Validate and clamp positions to ensure they are within (0, max) range.
-
-        Args:
-            positions: List of target positions for all axes
-
-        Returns:
-            List of clamped positions within valid range
-        """
-        if not self.max_positions:
-            print("Warning: Maximum positions not initialized, using positions as-is")
-            return positions
-
-        if len(positions) != len(self.max_positions):
-            raise ValueError(
-                f"Position list length {len(positions)} does not match number of axes {len(self.max_positions)}"
-            )
-
-        clamped_positions = []
-        for i, (pos, max_pos) in enumerate(zip(positions, self.max_positions)):
-            # Ensure position is within (0, max_pos) range
-            clamped_pos = max(
-                1, min(pos, max_pos - 1)
-            )  # Keep at least 1 unit away from limits
-            if clamped_pos != pos:
-                print(
-                    f"Warning: Axis {i+1} position {pos} clamped to {clamped_pos} (max: {max_pos})"
-                )
-            clamped_positions.append(clamped_pos)
-
-        return clamped_positions
 
     def run_loop_cycle(self):
         """Execute one cycle of the loop workflow."""
@@ -167,37 +88,39 @@ class DH5LoopController:
             print(f"Failed to get positions: {e}")
             return False
 
-        # Set all positions to specific values
-        print("Setting new positions...")
-        target_positions = [874, 1600, 1700, 1700, 1700, 900]
+        # Open pose
+        print("Moving to open pose...")
+        open_pose_scalings = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        open_pose_positions = [
+            int(max_pos * scaling)
+            for max_pos, scaling in zip(self.dh5.max_positions, open_pose_scalings)
+        ]
 
-        # Validate and clamp positions to ensure they are within safe limits
-        safe_positions = self.validate_and_clamp_positions(target_positions)
-
-        result = self.dh5.set_all_positions(safe_positions)
+        result = self.dh5.set_all_positions_by_ratio(open_pose_scalings)
         if result == DH5ModbusAPI.SUCCESS:
-            print(f"Positions set to: {safe_positions}")
+            print(
+                f"Positions set to scalings: {open_pose_scalings}, positions: {open_pose_positions}"
+            )
         else:
             print(f"Failed to set positions: {result}")
             return False
 
-        time.sleep(5)  # Wait for movement
+        time.sleep(1)  # Wait for movement
 
-        # Move back to zero positions
-        print("Moving back to zero positions...")
-        zero_positions = [1, 1, 1, 1, 1, 1]
+        # fist pose
+        print("Moving to fist pose...")
+        fist_pose_scalings = [0.0] * self.num_axes
+        fist_pose_scalings[0] = 1.0  # keep first axis at max position
+        fist_pose_scalings[5] = 0.05  # set last axis to quarter position
 
-        # Validate and clamp positions (though these should already be safe)
-        safe_zero_positions = self.validate_and_clamp_positions(zero_positions)
-
-        result = self.dh5.set_all_positions(safe_zero_positions)
+        result = self.dh5.set_all_positions_by_ratio(fist_pose_scalings)
         if result == DH5ModbusAPI.SUCCESS:
-            print("Moved back to zero positions")
+            print("Moved to fist pose")
         else:
-            print(f"Failed to move to zero positions: {result}")
+            print(f"Failed to move to fist pose: {result}")
             return False
 
-        time.sleep(3)  # Wait for movement
+        time.sleep(1)  # Wait for movement
 
         print(f"Loop cycle {self.loop_count} completed successfully!")
         return True
@@ -246,7 +169,7 @@ def main():
     # Configuration
     COM_PORT = "COM4"
     BAUD_RATE = 115200
-    LOOP_CYCLE_TIME = 15.0  # seconds - you can modify this value
+    LOOP_CYCLE_TIME = 3.0  # seconds - you can modify this value
 
     print("DH5 Modbus API - Loop Workflow Example")
     print("=" * 40)
@@ -260,9 +183,6 @@ def main():
         controller = DH5LoopController(
             port=COM_PORT, baud_rate=BAUD_RATE, loop_cycle=LOOP_CYCLE_TIME
         )
-
-        # Initialize the Serial port
-        controller.dh5.open_connection()
 
         # Run the workflow
         controller.run_loop_workflow()

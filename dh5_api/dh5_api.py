@@ -20,9 +20,8 @@ class DH5Registers:
     """DH5 robot register addresses"""
 
     # Initialization registers
-    # INITIALIZE_ALL = 0x0001
-    INITIALIZE = 0x0100
-    INITIALIZATION_STATUS = 0x0200
+    RETURN_TO_ZERO = 0x0100
+    RETURN_TO_ZERO_STATUS = 0x0200
 
     # Configuration registers
     SAVE_PARAM = 0x0300
@@ -31,14 +30,20 @@ class DH5Registers:
     # Individual axis position registers (0x0101-0x0106)
     AXIS_POSITION_BASE = 0x0101
 
-    # Individual axis force registers
+    # Individual axis force registers (0x0107-0x010C)
     AXIS_FORCE_BASE = 0x0107
 
     # Individual axis speed registers (0x010D-0x0112)
     AXIS_SPEED_BASE = 0x010D
 
+    # Individual axis acceleration/deceleration registers (0x0113-0x0118)
+    AXIS_ACCELERATION_BASE = 0x0113
+
+    # Status registers - operating status (0x0201-0x0206)
+    AXIS_OPERATION_STATUS_BASE = 0x0201
+
     # Status registers - current position readings (0x0207-0x020C)
-    AXIS_POSITION_STATUS_BASE = 0x0207
+    AXIS_CURRENT_POSITION_BASE = 0x0207
 
     # Status registers - current speed readings (0x020D-0x0212)
     AXIS_SPEED_STATUS_BASE = 0x020D
@@ -46,19 +51,12 @@ class DH5Registers:
     # Status registers - current readings (0x0213-0x0218)
     AXIS_CURRENT_BASE = 0x0213
 
-    # System status registers
-    CURRENT_FAULTS = 0x021F
-    IS_BUSY = 0x0220
-    CURRENT_POSITIONS = 0x0230
-
     # Command registers
     RESET_FAULTS = 0x0501
-    BACK_TO_INITIAL = 0x0502
     RESTART_SYSTEM = 0x0503
-    BACK_TO_ZERO = 0x0504
+    AGING_TEST = 0x0504
 
     # Data registers
-    # TARGET_POSITIONS = 0x0300
     HISTORY_FAULTS = 0x0B00
 
     # Constants
@@ -69,6 +67,11 @@ class DH5Registers:
     INIT_MODE_CLOSE = 0b01
     INIT_MODE_OPEN = 0b10
     INIT_MODE_FIND_STROKE = 0b11
+
+    # Intialization status
+    INIT_STATUS_NOT_INITIALIZED = 0b00
+    INIT_STATUS_INITIALIZING = 0b01
+    INIT_STATUS_INITIALIZED = 0b10
 
 
 class DH5ModbusAPI:
@@ -83,6 +86,8 @@ class DH5ModbusAPI:
     ERROR_INVALID_RESPONSE = 2
     ERROR_CRC_CHECK_FAILED = 3
     ERROR_INVALID_COMMAND = 4
+
+    max_positions = [500] * DH5Registers.AXIS_COUNT
 
     def __init__(
         self,
@@ -190,10 +195,8 @@ class DH5ModbusAPI:
                 function_code, register_address, data, data_length
             )
 
-            if response.isError():
-                return self.ERROR_INVALID_RESPONSE
-
             return self._parse_response(response, function_code)
+
         except (ModbusException, ValueError, ConnectionError) as e:
             logger.error(f"Modbus operation failed: {str(e)}")
             return self.ERROR_INVALID_RESPONSE
@@ -279,14 +282,14 @@ class DH5ModbusAPI:
             Parsed response data or error code
         """
         # Check if response is an exception
-        if isinstance(response, ExceptionResponse):
+        if isinstance(response, ExceptionResponse) and response.function_code != 0xFF:
             logger.error(f"Modbus exception response: {response}")
             return self.ERROR_INVALID_RESPONSE
 
         # Check if response is valid
-        if response.isError():
-            logger.error(f"Modbus error response: {response}")
-            return self.ERROR_INVALID_RESPONSE
+        # if response.isError():
+        #     logger.error(f"Modbus error response: {response}")
+        #     return self.ERROR_INVALID_RESPONSE
 
         if function_code == ModbusFunction.READ_HOLDING_REGISTERS:
             return response.registers
@@ -298,19 +301,65 @@ class DH5ModbusAPI:
 
         return self.SUCCESS
 
+    def calibrate_max_positions(self) -> int:
+        if not self.client:
+            raise ConnectionError("Modbus client not initialized")
+
+        # Initialize to open pose
+        self.initialize(2)
+        time.sleep(2)
+
+        while True:
+            results = self.check_initialization()
+
+            if isinstance(results, dict) and len(results) == DH5Registers.AXIS_COUNT:
+                if all(status == "initialized" for status in results.values()):
+                    break
+
+            logger.debug(f"Initialization status: {results}")
+            time.sleep(1)
+
+        # get current positions
+        results = self.get_all_positions()
+
+        if isinstance(results, list) and len(results) == DH5Registers.AXIS_COUNT:
+            self.max_positions = results
+            logger.info(f"Max positions initialized: {self.max_positions}")
+
+            return DH5ModbusAPI.SUCCESS
+        else:
+            logger.error("Failed to get valid position readings")
+            return self.ERROR_INVALID_RESPONSE
+
+    def _validate_and_clamp_positions(self, positions):
+        if not self.max_positions:
+            logger.warning(
+                "Warning: Maximum positions not initialized, using positions as-is"
+            )
+            return positions
+
+        if len(positions) != len(self.max_positions):
+            raise ValueError(
+                f"Position list length {len(positions)} does not match number of axes {len(self.max_positions)}"
+            )
+
+        clamped_positions = []
+        for i, (pos, max_pos) in enumerate(zip(positions, self.max_positions)):
+            # Ensure position is within (0, max_pos) range
+            clamped_pos = max(
+                1, min(pos, max_pos - 10)
+            )  # Keep at least 10 units away from limits
+            if clamped_pos != pos:
+                logger.warning(
+                    f"Warning: Axis {i+1} position {pos} clamped to {clamped_pos} (max: {max_pos})"
+                )
+            clamped_positions.append(clamped_pos)
+
+        logger.debug(f"Clamped positions: {clamped_positions} (original: {positions})")
+
+        return clamped_positions
+
     # Robot Status Methods
-    def get_current_faults(self) -> Union[List[int], int]:
-        """Get current fault status
-
-        Returns:
-            List containing fault register value, or error code
-        """
-        return self.send_modbus_command(
-            function_code=ModbusFunction.READ_HOLDING_REGISTERS,
-            register_address=DH5Registers.CURRENT_FAULTS,
-            data_length=1,
-        )
-
     def get_history_faults(self) -> Union[List[int], int]:
         """Get fault history
 
@@ -323,22 +372,6 @@ class DH5ModbusAPI:
             data_length=DH5Registers.HISTORY_FAULTS_LENGTH,
         )
 
-    @property
-    def is_busy(self) -> bool:
-        """Check if robot is currently executing a command
-
-        Returns:
-            True if robot is busy, False otherwise
-        """
-        result = self.send_modbus_command(
-            function_code=ModbusFunction.READ_HOLDING_REGISTERS,
-            register_address=DH5Registers.IS_BUSY,
-            data_length=1,
-        )
-        if isinstance(result, list) and len(result) > 0:
-            return bool(result[0])
-        return False
-
     def get_all_positions(self) -> Union[List[int], int]:
         """Get current positions of all axes
 
@@ -347,7 +380,7 @@ class DH5ModbusAPI:
         """
         return self.send_modbus_command(
             function_code=ModbusFunction.READ_HOLDING_REGISTERS,
-            register_address=DH5Registers.CURRENT_POSITIONS,
+            register_address=DH5Registers.AXIS_CURRENT_POSITION_BASE,
             data_length=DH5Registers.AXIS_COUNT,
         )
 
@@ -360,7 +393,7 @@ class DH5ModbusAPI:
         """
         result = self.send_modbus_command(
             function_code=ModbusFunction.READ_HOLDING_REGISTERS,
-            register_address=DH5Registers.INITIALIZATION_STATUS,
+            register_address=DH5Registers.RETURN_TO_ZERO_STATUS,
             data_length=1,
         )
 
@@ -391,7 +424,7 @@ class DH5ModbusAPI:
         if axis < 1 or axis > 6:
             raise ValueError("Axis must be between 1 and 6")
 
-        register_address = DH5Registers.AXIS_POSITION_STATUS_BASE + (axis - 1)
+        register_address = DH5Registers.AXIS_CURRENT_POSITION_BASE + (axis - 1)
         return self.send_modbus_command(
             function_code=ModbusFunction.READ_HOLDING_REGISTERS,
             register_address=register_address,
@@ -463,36 +496,23 @@ class DH5ModbusAPI:
         )
         return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
 
-    def back_to_initial_position(self) -> int:
-        """Move robot back to initial position
-
-        Returns:
-            SUCCESS if command sent successfully, error code otherwise
+    def aging_test(self, flag: int) -> int:
         """
-        result = self.send_modbus_command(
-            function_code=ModbusFunction.WRITE_SINGLE_REGISTER,
-            register_address=DH5Registers.BACK_TO_INITIAL,
-            data=1,
-        )
-        return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
-
-    def back_to_zero(self, axis_mask: int = 0b111111) -> int:
-        """Move specified axes back to zero position
-
+        Enable or disable aging test mode on the DH5 device.
         Args:
-            axis_mask: Bitmask indicating which axes to move (default: all 6 axes)
-                      Bit 0 = axis 1, bit 1 = axis 2, etc.
-
+            flag (int): Test mode flag. Must be 0 to disable or 1 to enable aging test.
         Returns:
-            SUCCESS if command sent successfully, error code otherwise
+            int: Result of the Modbus command execution, or ERROR_INVALID_RESPONSE if the response is invalid.
+        Raises:
+            ValueError: If flag is not 0 or 1.
         """
-        if not (0 <= axis_mask <= 0b111111):
-            raise ValueError("axis_mask must be between 0 and 63 (0b111111)")
+        if flag not in [0, 1]:
+            raise ValueError("Flag must be 0 (disable) or 1 (enable)")
 
         result = self.send_modbus_command(
             function_code=ModbusFunction.WRITE_SINGLE_REGISTER,
-            register_address=DH5Registers.BACK_TO_ZERO,
-            data=axis_mask,
+            register_address=DH5Registers.AGING_TEST,
+            data=flag,
         )
         return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
 
@@ -513,10 +533,53 @@ class DH5ModbusAPI:
                 f"Must provide exactly {DH5Registers.AXIS_COUNT} position values"
             )
 
+        safe_positions = self._validate_and_clamp_positions(positions)
+
         result = self.send_modbus_command(
             function_code=ModbusFunction.WRITE_MULTIPLE_REGISTERS,
             register_address=DH5Registers.AXIS_POSITION_BASE,
-            data=positions,
+            data=safe_positions,
+            data_length=DH5Registers.AXIS_COUNT,
+        )
+        return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
+
+    def set_all_positions_by_ratio(self, scalings: List[float]) -> int:
+        """Set target positions for all axes using ratio scaling (0.0 to 1.0)
+
+        Args:
+            ratio_positions: List of 6 ratio values (0.0-1.0) for each axis
+
+        Returns:
+            SUCCESS if command sent successfully, error code otherwise
+
+        Raises:
+            ValueError: If positions list doesn't contain exactly 6 values
+        """
+        if len(scalings) != DH5Registers.AXIS_COUNT:
+            raise ValueError(
+                f"Must provide exactly {DH5Registers.AXIS_COUNT} ratio values"
+            )
+
+        # Check ratio values in ratio_positions
+        if not all(0.0 <= ratio <= 1.0 for ratio in scalings):
+            raise ValueError("All ratio values must be float and between 0 and 1")
+
+        # Scale positions by ratio
+        scaled_positions = [
+            int(max_pos * ratio) for max_pos, ratio in zip(self.max_positions, scalings)
+        ]
+        logger.debug(f"Scaled positions: {scaled_positions} from ratios: {scalings}")
+
+        safe_positions = self._validate_and_clamp_positions(scaled_positions)
+        logger.debug(
+            f"Safe positions after clamping: {safe_positions} (original: {scaled_positions})"
+        )
+
+        result = self.send_modbus_command(
+            function_code=ModbusFunction.WRITE_MULTIPLE_REGISTERS,
+            register_address=DH5Registers.AXIS_POSITION_BASE,
+            data=safe_positions,
+            data_length=DH5Registers.AXIS_COUNT,
         )
         return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
 
@@ -597,7 +660,7 @@ class DH5ModbusAPI:
 
         result = self.send_modbus_command(
             function_code=ModbusFunction.WRITE_SINGLE_REGISTER,
-            register_address=DH5Registers.INITIALIZE,
+            register_address=DH5Registers.RETURN_TO_ZERO,
             data=data,
         )
         return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
@@ -633,7 +696,7 @@ class DH5ModbusAPI:
 
         result = self.send_modbus_command(
             function_code=ModbusFunction.WRITE_SINGLE_REGISTER,
-            register_address=DH5Registers.INITIALIZE,
+            register_address=DH5Registers.RETURN_TO_ZERO,
             data=init_status,
         )
         return result if isinstance(result, int) else self.ERROR_INVALID_RESPONSE
